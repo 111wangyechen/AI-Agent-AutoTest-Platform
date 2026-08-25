@@ -1,0 +1,63 @@
+# ==================== 敏感信息（绝对不能提交）====================
+.env
+.env.local
+.env.*.local
+*.secret
+credentials.json
+
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+
+# ==================== 虚拟环境 ====================
+.venv/
+venv/
+env/
+ENV/
+
+# ==================== 构建产物 ====================
+build/
+dist/
+*.egg
+*.whl
+
+# ==================== IDE ====================
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ==================== 测试产物 ====================
+# 真调 LLM 的验证结果（包含时间戳）
+preflight_llm_result_*.txt
+wakeup_test_result_*.txt
+executor_test_report_*.txt
+full_test_report_*.txt
+analysis_result_*.txt
+
+# 临时调试文件
+_xlsx_dump.txt
+test_output.log
+*.tmp
+
+# ==================== 项目临时产物 ====================
+# workspace 里的 checkpoint / 采集数据（每次测试都会重新生成）
+workspace/
+*/workspace/
+.checkpoints/
+
+# ==================== OS ====================
+Thumbs.db
+desktop.ini

@@ -1,0 +1,92 @@
+# CI · 主测试流水线
+#
+# 每次 push / PR 自动跑，秒级反馈。用 mock 模式：
+# - 不连真机（CI 上没设备）
+# - 不调 LLM（不烧 token、不受网络影响、稳定可复现）
+# - 只测确定性层（指标计算、日志解析、checkpoint 存取、漂移检测、执行器派发）
+#
+# 真机 / 真 LLM 的验证由 llm-verify.yml 单独跑（手动/scheduled，非阻塞）。
+
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  # 允许在 Actions 页面手动触发
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit Tests (mock mode)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest-cov
+
+      - name: Run test suite (mock mode)
+        env:
+          PLATFORM_MOCK: '1'
+        run: |
+          pytest tests/ -v --tb=short \
+            --cov=core \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --junit-xml=test-results.xml
+
+      - name: Upload coverage to artifact
+        if: always() && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            test-results.xml
+          retention-days: 30
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## 测试结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Python: ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 模式: PLATFORM_MOCK=1（不连真机、不调 LLM）" >> $GITHUB_STEP_SUMMARY
+          echo "- 覆盖范围: 确定性层单元测试" >> $GITHUB_STEP_SUMMARY
+
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint with ruff
+        run: |
+          # 只报错致命问题，不因风格差异 fail
+          ruff check core/ tests/ --select=E9,F63,F7,F82 --output-format=github
