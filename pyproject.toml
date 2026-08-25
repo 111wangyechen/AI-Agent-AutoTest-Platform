@@ -15,6 +15,12 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# 包目录是 core/，与 project name 不同名，必须显式声明，
+# 否则 hatchling 按项目名找 ai_agent_test_platform/ 目录失败，
+# 导致 CI 上 `pip install -e .` 报 "Unable to determine which files to ship"。
+[tool.hatch.build.targets.wheel]
+packages = ["core"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
