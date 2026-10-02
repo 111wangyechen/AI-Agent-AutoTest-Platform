@@ -31,6 +31,15 @@ class Config:
     # logcat 抓取的最大行数（避免一次拉太多）
     logcat_lines: int = int(os.getenv("LOGCAT_LINES", "800"))
 
+    # 运行预算闸（P5：预算管控）。默认 None=不设限，行为与升级前完全一致。
+    # 一次运行越界（token 累计 or 墙钟）即诚实收尾，不空烧。
+    max_total_tokens: int | None = (
+        int(os.getenv("MAX_TOTAL_TOKENS")) if os.getenv("MAX_TOTAL_TOKENS") else None
+    )
+    max_wall_clock_s: float | None = (
+        float(os.getenv("MAX_WALL_CLOCK_S")) if os.getenv("MAX_WALL_CLOCK_S") else None
+    )
+
     # 台灯插件：真机跑 iperf3 时打到的 server 地址（电脑侧 iperf3 -s 的 IP）
     iperf3_server: str = os.getenv("IPERF3_SERVER", "192.168.211.2")
 

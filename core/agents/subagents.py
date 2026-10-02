@@ -21,8 +21,8 @@ from core.plugins import (
     TestPlugin,
     TestRequirement,
 )
-from core.tools import ToolRegistry
-from .base import LLMAgent
+from core.tools import ToolRegistry, ToolRole
+from .base import FinalTool, LLMAgent
 
 OnEvent = Callable[[str, Any], None] | None
 
@@ -224,28 +224,19 @@ class ExecutorAgent:
     #
     # 曾经这里用「工具名里是否含 playback/log 子串」来找工具，结果台灯插件把播放
     # 工具改名成 lamp_wakeup_test 后匹配不上，执行阶段静默跳过播放、只读日志
-    # ——表现就是「测试跑完了但没听到声音」。改为向插件问角色，插件已经用
-    # audio_playback_tool()/log_collector()/audio_collector() 明确声明了。
+    # ——表现就是「测试跑完了但没听到声音」。现在角色是显式枚举 ToolRole，
+    # 执行 Agent 只问 plugin.tool_for_role(role)，不再散落方法名字符串。
 
-    def _role_tool(self, role: str) -> str | None:
+    def _role_tool(self, role: str | ToolRole) -> str | None:
         """
-        取某个角色对应的工具名。role ∈ {playback, audio, log}。
+        取某个角色对应的工具名。role 接受 ToolRole 或其字符串值（playback/audio/log）。
         插件未声明该角色（或返回 None）时返回 None。
         """
-        getter = {
-            "playback": "audio_playback_tool",
-            "audio": "audio_collector",
-            "log": "log_collector",
-        }.get(role)
-        if not getter:
-            return None
-        fn = getattr(self.plugin, getter, None)
-        if fn is None:
-            return None
         try:
-            tool = fn()
-        except Exception:
-            return None
+            role_enum = role if isinstance(role, ToolRole) else ToolRole(role)
+        except ValueError:
+            return None  # 未知角色字符串
+        tool = self.plugin.tool_for_role(role_enum)
         return tool.name if tool is not None else None
 
     def _default_collector(self) -> str | None:
@@ -253,48 +244,96 @@ class ExecutorAgent:
         return names[0] if names else None
 
 
-REPRODUCE_DECISION_INSTRUCTION = """
+# 分析 Agent 的复测 + 记忆库决策 schema（强制工具调用的入参约束）。
+# 取代旧的「在 Markdown 末尾追加 ```json 块再正则抠」，改由模型直接以
+# 结构化工具入参提交，字段/类型由 schema 约束，杜绝解析脆弱性。
+DECISION_TOOL_NAME = "submit_diagnosis_decision"
 
-【重要】给出 Markdown 结论后，必须在最末尾追加一个 ```json 代码块，包含复测决策：
-```json
-{
-  "need_reproduce": false,
-  "reproduce_hint": "",
-  "target_evidence": [],
-  "matched_bad_cases": [],
-  "is_new_bug": false,
-  "bug_summary": {}
+DECISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "need_reproduce": {
+            "type": "boolean",
+            "description": "证据不足以定论、需回到执行阶段复现并补采证据时设 true",
+        },
+        "reproduce_hint": {
+            "type": "string",
+            "description": "复现指导，如「连续播放 20 次唤醒音频，同时抓四路音频和全量串口日志」",
+        },
+        "target_evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "需补采的证据类型，可选 four_channel_audio / full_serial_log / "
+                           "wakeup_trace / serial_link_check / sensitivity_state",
+        },
+        "matched_bad_cases": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "从 Golden-set 查到并确认命中的历史 bad-case id 列表",
+        },
+        "is_new_bug": {
+            "type": "boolean",
+            "description": "是否是应写入 Golden-set 的新 bug（唤醒率不达标 + 定位到应用/框架层通常是）",
+        },
+        "bug_summary": {
+            "type": "object",
+            "description": "若 is_new_bug=true，给出 {title, symptom, root_cause, layer, "
+                           "tags[], log_signatures[], severity, fix_suggestion}",
+        },
+        # ---------- 证据置信度门槛（P8：防假绿）----------
+        # 这两维让「模型给了结论」与「结论可不可信」解耦：低置信/证据不足的结论
+        # 不被 Coordinator 当定论自动写库，而是进待人工复核队列（见 coordinator._gate_confidence）。
+        "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "description": "对根因判断的置信度。证据链完整且指向单一根因=high；"
+                           "有合理推断但仍存在其他可能=medium；主要靠猜、证据零散=low",
+        },
+        "evidence_sufficiency": {
+            "type": "string",
+            "enum": ["sufficient", "insufficient"],
+            "description": "现有证据是否足以支撑该结论。不足时应同时置 need_reproduce=true 去补采",
+        },
+    },
+    "required": ["need_reproduce", "is_new_bug"],
 }
-```
 
-各字段含义：
-- need_reproduce: 若证据不足以定论、需要回到执行阶段复现并补采证据，设 true
-- reproduce_hint: 复现指导，例如「连续播放 20 次唤醒音频，同时抓取四路音频和 log_serial.txt 全量日志」
-- target_evidence: 需要的证据类型，可选值 ["four_channel_audio", "full_serial_log",
-  "wakeup_trace", "serial_link_check", "sensitivity_state"]
-- matched_bad_cases: 从 Golden-set 查到并确认命中的历史 bad-case id 列表
-- is_new_bug: 是否是应写入 Golden-set 的新 bug（唤醒率不达标 + 定位到应用/框架层 = 通常是）
-- bug_summary: 若 is_new_bug=true，给出 {title, symptom, root_cause, layer,
-  tags[], log_signatures[], severity, fix_suggestion}
-"""
+DECISION_TOOL_INSTRUCTION = (
+    "\n\n【重要】完成分层定位后，你必须调用 `submit_diagnosis_decision` 工具，"
+    "以结构化参数提交复测决策与记忆库判定（need_reproduce / reproduce_hint / "
+    "target_evidence / matched_bad_cases / is_new_bug / bug_summary）。"
+    "同时必须给出 confidence 与 evidence_sufficiency 两维：证据不足时置信度不得填 high，"
+    "且应把 evidence_sufficiency 置为 insufficient 并一并置 need_reproduce=true。"
+    "宁可如实报告低置信、也不要伪装成定论。"
+    "文字结论照常给出，但决策一律通过该工具提交，不要在正文里写 JSON。"
+)
 
 
 class AnalysisAgent:
     """结果分析（核心）：多轮工具循环做分层故障定位，产出 Diagnosis。"""
 
-    def __init__(self, plugin: TestPlugin) -> None:
+    def __init__(self, plugin: TestPlugin, client: Any | None = None) -> None:
         self.plugin = plugin
         self.agent = LLMAgent(
             name="结果分析",
-            system_prompt=plugin.analysis_prompt() + REPRODUCE_DECISION_INSTRUCTION,
+            system_prompt=plugin.analysis_prompt() + DECISION_TOOL_INSTRUCTION,
             registry=ToolRegistry(plugin.analysis_tools()),
             max_rounds=12,
+            final_tool=FinalTool(
+                name=DECISION_TOOL_NAME,
+                description="提交分层定位后的复测决策与记忆库判定。",
+                input_schema=DECISION_SCHEMA,
+            ),
+            client=client,
         )
 
     def run(self, task: str, on_event: OnEvent = None) -> Diagnosis:
         out = self.agent.run(task, on_event=on_event)
-        # 从 Markdown 尾部抠出 ```json 决策块
-        decision = _extract_tail_json(out["text"])
+        decision = out.get("final_tool_input")
+        if not decision:
+            # 模型未调用结论工具（异常/降级）：优雅退化，保留文字结论，决策取安全默认。
+            # 兼容兜底：若正文里恰好还带了旧式 json 块，尝试抠出来（不作为主路径）。
+            decision = _extract_tail_json(out["text"])
         return Diagnosis(
             text=out["text"],
             rounds=out["rounds"],
@@ -305,13 +344,19 @@ class AnalysisAgent:
             matched_bad_cases=decision.get("matched_bad_cases", []) or [],
             is_new_bug=bool(decision.get("is_new_bug", False)),
             bug_summary=decision.get("bug_summary", {}) or {},
+            # P8：置信度两维，缺失（旧模型/降级）取安全默认，行为同升级前
+            confidence=decision.get("confidence") or "medium",
+            evidence_sufficiency=decision.get("evidence_sufficiency") or "sufficient",
         )
 
 
 def _extract_tail_json(text: str) -> dict[str, Any]:
     """
-    从 Markdown 末尾抠出 ```json ... ``` 代码块。
-    找不到或解析失败返回空 dict，保持向后兼容（老流程不受影响）。
+    [DEPRECATED] 从 Markdown 末尾抠出 ```json ... ``` 代码块。
+
+    P0-A 起，复测/记忆库决策改由 FinalTool 强制工具调用提交（见 AnalysisAgent），
+    不再依赖本函数。仅在模型异常未调用结论工具时作兜底，勿作为主路径。
+    找不到或解析失败返回空 dict。
     """
     import re
     # 匹配最后一个 ```json 块
@@ -363,6 +408,15 @@ class ReportAgent:
             "collectors_used": sorted({r.collector for r in raw}),
             "diagnosis": diagnosis.text if diagnosis else "(无)",
         }
+        # P8：把置信度门槛结果透给报告，低置信/证据不足时让报告如实写明，不洗成定论
+        if diagnosis is not None:
+            summary["confidence"] = diagnosis.confidence
+            summary["evidence_sufficiency"] = diagnosis.evidence_sufficiency
+            summary["needs_human_review"] = diagnosis.needs_human_review
+            if diagnosis.needs_human_review:
+                summary["review_notice"] = (
+                    "本次结论为低置信或证据不足，请在报告显著位置标注「需人工复核」，不得当作定论。"
+                )
         task = "根据以下测试过程数据生成一份结构化测试报告：\n" + json.dumps(
             summary, ensure_ascii=False, indent=2
         )

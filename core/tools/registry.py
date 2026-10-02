@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import Tool
+from .base import Tool, normalize_result
 
 
 class ToolRegistry:
@@ -30,11 +30,12 @@ class ToolRegistry:
         return [t.to_claude() for t in self._tools.values()]
 
     def execute(self, name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        """按名字执行工具，未知工具返回结构化错误。"""
+        """按名字执行工具，未知工具返回结构化错误。结果经 normalize_result 归一，
+        保证一定含 status 键，给 Agent 稳定的错误面。"""
         tool = self._tools.get(name)
         if tool is None:
             return {"status": "error", "result": f"未知工具: {name}"}
-        return tool.run(tool_input)
+        return normalize_result(tool.run(tool_input))
 
     def names(self) -> list[str]:
         """当前注册的工具名，便于调试和展示。"""

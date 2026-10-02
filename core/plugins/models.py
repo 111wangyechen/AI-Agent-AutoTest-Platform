@@ -110,6 +110,14 @@ class Diagnosis:
     is_new_bug: bool = False                   # 是否是应写入 golden-set 的新 bug
     bug_summary: dict[str, Any] = field(default_factory=dict)   # 若是新 bug，结构化摘要
 
+    # ---------- 证据置信度门槛（P8：防假绿）----------
+    # 分析 Agent 给出结论时一并声明「有多可信 / 证据够不够」，让 Coordinator 据此分流：
+    # 低置信或证据不足的结论不被当定论自动写库为 CONFIRMED，而是转人工复核。
+    # 旧数据/降级缺字段时取安全默认（medium + sufficient），行为与升级前一致。
+    confidence: str = "medium"                 # high / medium / low
+    evidence_sufficiency: str = "sufficient"   # sufficient / insufficient
+    needs_human_review: bool = False           # 由 Coordinator 据上两维裁定，落盘供报告用
+
 
 @dataclass
 class TestReport:

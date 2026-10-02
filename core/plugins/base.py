@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from core.tools import Tool
+from core.tools import Tool, ToolRole
 from .models import (
     Checkpoint,
     Diagnosis,
@@ -72,6 +72,33 @@ class TestPlugin(ABC):
     @abstractmethod
     def report_template(self) -> str:
         """报告生成 Agent 的 system prompt / 结构模板。"""
+
+    # ---------- 可选：执行阶段按角色取工具 ----------
+    def tool_for_role(self, role: ToolRole) -> Tool | None:
+        """
+        按角色返回执行阶段要用的工具（PLAYBACK / AUDIO / LOG）。
+
+        默认实现回退到既有的 audio_playback_tool() / audio_collector() /
+        log_collector() 方法——现有插件无需改动即可用；找不到方法或方法返回
+        None 时返回 None。子类可覆盖为显式的角色→工具映射。
+
+        取代早期「_role_tool 里方法名魔法字符串 + getattr」的脆弱寻址：角色现在
+        是显式枚举，执行 Agent 只认 ToolRole，不再散落方法名字符串。
+        """
+        method_name = {
+            ToolRole.PLAYBACK: "audio_playback_tool",
+            ToolRole.AUDIO: "audio_collector",
+            ToolRole.LOG: "log_collector",
+        }.get(role)
+        if not method_name:
+            return None
+        getter = getattr(self, method_name, None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
 
     # ---------- 可选：给需求分析 Agent 的提示 ----------
     def requirement_prompt(self) -> str:
